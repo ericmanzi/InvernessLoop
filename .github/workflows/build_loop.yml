@@ -195,6 +195,14 @@ jobs:
           fi
 
           # Submodule Loop patches:
+          # Apply patches from patches/ directory to Loop submodule
+          if $(ls ./patches/*.patch &> /dev/null); then
+            for patch in ./patches/*.patch; do
+              echo "Applying $patch to Loop submodule..."
+              git apply "$patch" --directory=Loop -v --whitespace=fix
+            done
+          fi
+
           # Template for customizing submodule Loop (changes Loop app name to "CustomLoop")
           # Remove the "#" sign from the beginning of the line below to activate:
           #curl https://github.com/loopnlearn/Loop/commit/d206432b024279ef710df462b20bd464cd9682d4.patch | git apply --directory=Loop -v --whitespace=fix
