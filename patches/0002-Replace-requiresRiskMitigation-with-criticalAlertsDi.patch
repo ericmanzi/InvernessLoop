@@ -1,0 +1,30 @@
+From cc2a253b0de788af4b103127001193b7aba6b5a0 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 27 Mar 2026 03:37:09 +0000
+Subject: [PATCH] Replace requiresRiskMitigation with criticalAlertsDisabled in
+ AlertPermissionsChecker
+
+Update the intersection check in NotificationCenterSettingsFlags to use
+.criticalAlertsDisabled instead of .requiresRiskMitigation.
+
+https://claude.ai/code/session_01F1wur2rA2PPfF1MYkPPKez
+---
+ Loop/Managers/AlertPermissionsChecker.swift | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/Loop/Managers/AlertPermissionsChecker.swift b/Loop/Managers/AlertPermissionsChecker.swift
+index bae4512e..a0458775 100644
+--- a/Loop/Managers/AlertPermissionsChecker.swift
++++ b/Loop/Managers/AlertPermissionsChecker.swift
+@@ -228,7 +228,7 @@ extension NotificationCenterSettingsFlags {
+         }
+     }
+     var requiresRiskMitigation: Bool {
+-        !self.intersection(.requiresRiskMitigation).isEmpty
++        !self.intersection(.criticalAlertsDisabled).isEmpty
+     }
+ }
+ 
+-- 
+2.43.0
+
