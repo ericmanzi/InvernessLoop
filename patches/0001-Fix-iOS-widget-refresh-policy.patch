@@ -1,0 +1,31 @@
+From 554cf0756ac454dbac8960824d3ba0daa6a5ce7c Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Mon, 23 Mar 2026 19:22:25 +0000
+Subject: [PATCH] Fix iOS widget refresh policy
+
+Change widget timeline refresh policy from .after(nextHour) to .atEnd to allow more frequent widget updates. This fixes the issue where the widget was not updating promptly with current Loop status and glucose data.
+
+The previous 1-hour refresh policy conflicted with the calculated staleness-based refresh times (6-15 minutes) and caused iOS to throttle widget reload requests from the main app. Using .atEnd policy respects the calculated refresh dates and allows the widget to update as frequently as needed for health monitoring.
+---
+ .../Timeline/StatusWidgetTimelineProvider.swift              | 5 ++---
+ 1 file changed, 2 insertions(+), 3 deletions(-)
+
+diff --git a/Loop Widget Extension/Timeline/StatusWidgetTimelineProvider.swift b/Loop Widget Extension/Timeline/StatusWidgetTimelineProvider.swift
+index beb8bd2f..838fbe73 100644
+--- a/Loop Widget Extension/Timeline/StatusWidgetTimelineProvider.swift	
++++ b/Loop Widget Extension/Timeline/StatusWidgetTimelineProvider.swift	
+@@ -80,9 +80,8 @@ class StatusWidgetTimelineProvider: TimelineProvider {
+                 copiedEntry.date = date
+                 entries.append(copiedEntry)
+             }
+-                                
+-            let nextHour = Date().addingTimeInterval(.hours(1))
+-            let timeline = Timeline(entries: entries, policy: .after(nextHour))
++
++            let timeline = Timeline(entries: entries, policy: .atEnd)
+             self.log.default("Returning timeline: %{public}@", String(describing: datesToRefreshWidget))
+             completion(timeline)
+         }
+-- 
+2.43.0
+
