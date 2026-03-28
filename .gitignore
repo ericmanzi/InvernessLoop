@@ -27,3 +27,5 @@ xcuserdata/
 *.playground
 playground.xcworkspace
 timeline.xctimeline
+icon_backup/
+new_icon.png
