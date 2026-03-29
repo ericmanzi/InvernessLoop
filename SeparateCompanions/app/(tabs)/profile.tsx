@@ -19,7 +19,6 @@ import { Colors } from '../../utils/colors';
 import { useAuthStore } from '../../store/authStore';
 import { QuietModeToggle } from '../../components/QuietModeToggle';
 import { SpacePreferences } from '../../components/SpacePreferences';
-import { BreathingRoomScore } from '../../components/BreathingRoomScore';
 import { Badge } from '../../components/ui/Badge';
 import { Button } from '../../components/ui/Button';
 import { attachmentStyleLabel } from '../../utils/attachmentQuiz';
