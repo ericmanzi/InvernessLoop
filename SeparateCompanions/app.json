@@ -1,0 +1,41 @@
+{
+  "expo": {
+    "name": "Separate Companions",
+    "slug": "separate-companions",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "splash": {
+      "backgroundColor": "#0D1B2A"
+    },
+    "assetBundlePatterns": ["**/*"],
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.separatecompanions.app"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#0D1B2A"
+      },
+      "package": "com.separatecompanions.app"
+    },
+    "web": {
+      "bundler": "metro"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-linear-gradient",
+      [
+        "@react-native-async-storage/async-storage",
+        {
+          "exclude": ["expo-secure-store"]
+        }
+      ]
+    ],
+    "scheme": "separatecompanions",
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}
