@@ -1,0 +1,55 @@
+From c9e0cef6702206dbfd4823a5cdeacc8fc71973c7 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sun, 29 Mar 2026 14:12:34 +0000
+Subject: [PATCH] Fix iOS widget not receiving data updates
+
+Add WidgetCenter.reloadAllTimelines() call after updating extension context
+so widgets refresh immediately when data changes, not just when Loop completes
+or the app becomes active.
+
+Previously, ExtensionDataManager would update the shared UserDefaults data but
+wouldn't notify widgets to reload. This caused widgets to display stale data
+(-1 mg/dL placeholder) until the user opened the app or a Loop cycle completed.
+
+Now widgets reload whenever:
+- Loop data updates (.LoopDataUpdated notification)
+- Pump manager changes (.PumpManagerChanged notification)
+- Extension context is refreshed
+
+This ensures widgets always show current glucose, Loop status, and insulin data.
+
+https://claude.ai/code/session_01F1wur2rA2PPfF1MYkPPKez
+---
+ Loop/Managers/ExtensionDataManager.swift | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/Loop/Managers/ExtensionDataManager.swift b/Loop/Managers/ExtensionDataManager.swift
+index 9261dcfc..19a9dac4 100644
+--- a/Loop/Managers/ExtensionDataManager.swift
++++ b/Loop/Managers/ExtensionDataManager.swift
+@@ -9,6 +9,7 @@
+ import HealthKit
+ import UIKit
+ import LoopKit
++import WidgetKit
+ 
+ 
+ final class ExtensionDataManager {
+@@ -64,9 +65,13 @@ final class ExtensionDataManager {
+         createStatusContext(glucoseUnit:  deviceManager.preferredGlucoseUnit) { (context) in
+             if let context = context {
+                 ExtensionDataManager.context = context
++                // Reload widgets after updating context data
++                if #available(iOS 14.0, *) {
++                    WidgetCenter.shared.reloadAllTimelines()
++                }
+             }
+         }
+-        
++
+         createIntentsContext { (info) in
+             if let info = info, ExtensionDataManager.intentExtensionInfo?.overridePresetNames != info.overridePresetNames {
+                 ExtensionDataManager.intentExtensionInfo = info
+-- 
+2.43.0
+
