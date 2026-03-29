@@ -1,0 +1,125 @@
+From b35474a966f8f9188492e37f2eb0835ff5c06183 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sun, 29 Mar 2026 15:29:40 +0000
+Subject: [PATCH] Fix Apple Watch complication showing dashes instead of last
+ value
+
+Add fallback logic to show last known glucose value when activeContext is nil,
+instead of returning nil which causes watchOS to display dashes (---).
+
+Changes:
+- Modified getCurrentTimelineEntry to call getFallbackTimelineEntry when no active context
+- Added getFallbackTimelineEntry method that:
+  - Fetches last glucose from local glucoseStore (past 3 hours)
+  - Creates minimal WatchContext with glucose data
+  - Generates complication template with gray tint to indicate stale data
+  - Returns entry with last known value instead of nil
+
+This ensures the complication always shows the most recent glucose reading
+available, even when:
+- iPhone is not connected
+- WatchConnectivity hasn't delivered recent updates
+- Active context expired or unavailable
+
+The gray tint visually indicates the data may be stale, while still providing
+useful information instead of placeholder dashes.
+
+https://claude.ai/code/session_01F1wur2rA2PPfF1MYkPPKez
+---
+ .../ComplicationController.swift              | 64 +++++++++++++++++--
+ 1 file changed, 60 insertions(+), 4 deletions(-)
+
+diff --git a/WatchApp Extension/ComplicationController.swift b/WatchApp Extension/ComplicationController.swift
+index 9f79aad2..944402dd 100644
+--- a/WatchApp Extension/ComplicationController.swift	
++++ b/WatchApp Extension/ComplicationController.swift	
+@@ -79,11 +79,11 @@ final class ComplicationController: NSObject, CLKComplicationDataSource {
+     func getCurrentTimelineEntry(for complication: CLKComplication, withHandler handler: (@escaping (CLKComplicationTimelineEntry?) -> Void)) {
+         updateChartManagerIfNeeded(completion: {
+             let entry: CLKComplicationTimelineEntry?
+-            
++
+             let timelineDate = Date()
+-            
++
+             self.log.default("Updating current complication timeline entry")
+-            
++
+             if let context = ExtensionDelegate.shared().loopManager.activeContext,
+                 let template = CLKComplicationTemplate.templateForFamily(complication.family,
+                                                                          from: context,
+@@ -99,7 +99,9 @@ final class ComplicationController: NSObject, CLKComplicationDataSource {
+                 }
+                 entry = CLKComplicationTimelineEntry(date: timelineDate, complicationTemplate: template)
+             } else {
+-                entry = nil
++                // Fallback: Show last known glucose from local storage instead of dashes
++                self.log.default("No active context, attempting to use last known glucose")
++                entry = self.getFallbackTimelineEntry(for: complication, at: timelineDate)
+             }
+ 
+             handler(entry)
+@@ -150,6 +152,60 @@ final class ComplicationController: NSObject, CLKComplicationDataSource {
+         }
+     }
+ 
++    // MARK: - Fallback Entry
++
++    private func getFallbackTimelineEntry(for complication: CLKComplication, at date: Date) -> CLKComplicationTimelineEntry? {
++        let loopManager = ExtensionDelegate.shared().loopManager
++
++        // Try to get the last stored glucose value
++        let glucoseStore = loopManager.glucoseStore
++        var lastGlucose: StoredGlucoseSample?
++
++        let group = DispatchGroup()
++        group.enter()
++
++        glucoseStore.getGlucoseSamples(start: Date(timeIntervalSinceNow: -.hours(3))) { result in
++            if case .success(let samples) = result {
++                lastGlucose = samples.last
++            }
++            group.leave()
++        }
++
++        group.wait()
++
++        guard let glucose = lastGlucose else {
++            self.log.default("No fallback glucose data available")
++            return nil
++        }
++
++        // Create a minimal context with just the glucose data
++        var fallbackContext = WatchContext()
++        fallbackContext.glucose = glucose.quantity.doubleValue(for: loopManager.displayGlucoseUnit)
++        fallbackContext.glucoseDate = glucose.startDate
++        fallbackContext.glucoseTrendRawValue = glucose.trendRate?.rawValue
++        fallbackContext.displayGlucoseUnit = loopManager.displayGlucoseUnit
++
++        if let template = CLKComplicationTemplate.templateForFamily(
++            complication.family,
++            from: fallbackContext,
++            at: date,
++            recencyInterval: LoopCoreConstants.inputDataRecencyInterval,
++            chartGenerator: self.makeChart)
++        {
++            switch complication.family {
++            case .graphicRectangular:
++                break
++            default:
++                template.tintColor = .gray  // Gray tint to indicate stale data
++            }
++
++            self.log.default("Returning fallback entry with glucose: %{public}@", String(describing: glucose.quantity))
++            return CLKComplicationTimelineEntry(date: date, complicationTemplate: template)
++        }
++
++        return nil
++    }
++
+     // MARK: - Placeholder Templates
+ 
+     func getLocalizableSampleTemplate(for complication: CLKComplication, withHandler handler: @escaping (CLKComplicationTemplate?) -> Void) {
+-- 
+2.43.0
+
