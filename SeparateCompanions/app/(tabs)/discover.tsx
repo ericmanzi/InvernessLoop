@@ -10,11 +10,6 @@ import {
   Modal,
   TouchableOpacity,
 } from 'react-native';
-import Animated, {
-  useSharedValue,
-  withTiming,
-  useAnimatedStyle,
-} from 'react-native-reanimated';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Colors, breathingRoomColor } from '../../utils/colors';
 import { useMatchStore } from '../../store/matchStore';
