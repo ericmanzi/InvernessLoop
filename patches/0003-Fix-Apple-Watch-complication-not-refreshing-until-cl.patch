@@ -1,35 +1,49 @@
-From f5c8052abfdfebf69a5ae3d7cc4110d17ebe726f Mon Sep 17 00:00:00 2001
+From 6dbec77ed550f3e29d55d524f82e44d6b0c8e884 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
-Date: Sat, 28 Mar 2026 18:20:34 +0000
-Subject: [PATCH] Fix Apple Watch complication not refreshing until clicked
+Date: Tue, 31 Mar 2026 02:04:49 +0000
+Subject: [PATCH] Fix Apple Watch complication not refreshing on wake
 
-Add complication refresh logic to background task handlers so the watch
-complication updates proactively rather than only when clicked.
+Add complication refresh logic to wake and background task handlers so the watch
+complication updates proactively.
 
 Changes:
 - Created refreshComplications() helper method to reload all active complications
+- Call refreshComplications() when watch app becomes active (on wake)
 - Call refreshComplications() when processing WKApplicationRefreshBackgroundTask
 - Call refreshComplications() after completing connectivity tasks
 - Refactored existing complication refresh code to use the new helper
 
 This ensures complications are refreshed when:
+- Watch wakes up and app becomes active
 - Data updates are received from the iPhone
-- Watch wakes up for background refresh
+- Watch wakes up for background refresh tasks
 - After processing WatchConnectivity updates
 
 Previously, complications only refreshed when the user clicked them or when
-the app was in the foreground, causing stale data to be displayed.
+specific data update notifications fired, causing stale data to be displayed
+on wake.
 
 https://claude.ai/code/session_01F1wur2rA2PPfF1MYkPPKez
 ---
- WatchApp Extension/ExtensionDelegate.swift | 8 ++++++++
- 1 file changed, 8 insertions(+)
+ WatchApp Extension/ExtensionDelegate.swift | 12 ++++++++++++
+ 1 file changed, 12 insertions(+)
 
 diff --git a/WatchApp Extension/ExtensionDelegate.swift b/WatchApp Extension/ExtensionDelegate.swift
-index 1ef1d13d..b07889aa 100644
+index 1ef1d13d..10cb2c13 100644
 --- a/WatchApp Extension/ExtensionDelegate.swift	
 +++ b/WatchApp Extension/ExtensionDelegate.swift	
-@@ -97,6 +97,8 @@ final class ExtensionDelegate: NSObject, WKExtensionDelegate {
+@@ -81,6 +81,10 @@ final class ExtensionDelegate: NSObject, WKExtensionDelegate {
+         }
+ 
+         NotificationCenter.default.post(name: type(of: self).didBecomeActiveNotification, object: self)
++
++        // Refresh complications when watch becomes active (e.g., on wake)
++        log.default("Watch became active, refreshing complications")
++        refreshComplications()
+     }
+ 
+     func applicationWillResignActive() {
+@@ -97,6 +101,8 @@ final class ExtensionDelegate: NSObject, WKExtensionDelegate {
              switch task {
              case is WKApplicationRefreshBackgroundTask:
                  log.default("Processing WKApplicationRefreshBackgroundTask")
@@ -38,7 +52,7 @@ index 1ef1d13d..b07889aa 100644
                  break
              case let task as WKSnapshotRefreshBackgroundTask:
                  log.default("Processing WKSnapshotRefreshBackgroundTask")
-@@ -140,6 +142,8 @@ final class ExtensionDelegate: NSObject, WKExtensionDelegate {
+@@ -140,6 +146,8 @@ final class ExtensionDelegate: NSObject, WKExtensionDelegate {
                  }
              }
              pendingConnectivityTasks.removeAll()
@@ -47,7 +61,7 @@ index 1ef1d13d..b07889aa 100644
          }
      }
  
-@@ -190,6 +194,10 @@ final class ExtensionDelegate: NSObject, WKExtensionDelegate {
+@@ -190,6 +198,10 @@ final class ExtensionDelegate: NSObject, WKExtensionDelegate {
          }
  
          // Update complication data if needed
