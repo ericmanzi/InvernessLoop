@@ -27,3 +27,6 @@ xcuserdata/
 *.playground
 playground.xcworkspace
 timeline.xctimeline
+
+## Scrabble script dictionary (download separately)
+Scripts/words.txt
