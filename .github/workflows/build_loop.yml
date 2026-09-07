@@ -94,12 +94,33 @@ jobs:
         with:
           token: ${{ secrets.GH_PAT }}
 
-      # This syncs any target branch to upstream branch of the same name
+      # The upstream repository only publishes branches such as main and dev.
+      # A fork may be built from a custom branch that does not exist upstream,
+      # in which case there is nothing to sync and the sync must be skipped.
+      - name: Check whether the upstream branch exists
+        id: upstream-branch
+        if: |
+          steps.workflow-permission.outputs.has_permission == 'true' &&
+          vars.SCHEDULED_SYNC != 'false' && github.repository_owner != 'LoopKit'
+        run: |
+          if git ls-remote --exit-code --heads "https://github.com/${UPSTREAM_REPO}.git" "${UPSTREAM_BRANCH}" > /dev/null 2>&1; then
+            echo "The branch '${UPSTREAM_BRANCH}' exists in ${UPSTREAM_REPO}."
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "The branch '${UPSTREAM_BRANCH}' does not exist in ${UPSTREAM_REPO}."
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      # This syncs any target branch to upstream branch of the same name.
+      # A failed sync (most often a submodule merge conflict caused by local
+      # commits on this branch) must not stop the build, so it is not fatal.
       - name: Sync upstream changes
         if: | # do not run the upstream sync action on the upstream repository
           steps.workflow-permission.outputs.has_permission == 'true' &&
-          vars.SCHEDULED_SYNC != 'false' && github.repository_owner != 'LoopKit'
+          vars.SCHEDULED_SYNC != 'false' && github.repository_owner != 'LoopKit' &&
+          steps.upstream-branch.outputs.exists == 'true'
         id: sync
+        continue-on-error: true
         uses: aormsby/Fork-Sync-With-Upstream-action@v3.4.2
         with:
           target_sync_branch: ${{ env.TARGET_BRANCH }}
@@ -120,6 +141,22 @@ jobs:
           steps.workflow-permission.outputs.has_permission == 'true' &&
           vars.SCHEDULED_SYNC != 'false' && steps.sync.outputs.has_new_commits == 'false'
         run: echo "There were no new commits."
+
+      - name: Upstream branch not found
+        if: steps.upstream-branch.outputs.exists == 'false'
+        run: |
+          echo "### :information_source: Upstream Sync Skipped" >> $GITHUB_STEP_SUMMARY
+          echo "The branch <code>${UPSTREAM_BRANCH}</code> does not exist in <code>${UPSTREAM_REPO}</code>, so there is nothing to sync." >> $GITHUB_STEP_SUMMARY
+          echo "The build continues with this branch as it is." >> $GITHUB_STEP_SUMMARY
+
+      - name: Upstream sync failed
+        if: steps.sync.outcome == 'failure'
+        run: |
+          echo "### :warning: Upstream Sync Failed" >> $GITHUB_STEP_SUMMARY
+          echo "<code>${UPSTREAM_REPO}/${UPSTREAM_BRANCH}</code> could not be merged into <code>${TARGET_BRANCH}</code>." >> $GITHUB_STEP_SUMMARY
+          echo "This is usually a merge conflict caused by commits on this branch that move submodule pointers." >> $GITHUB_STEP_SUMMARY
+          echo "Keep customizations in the <code>patches/</code> directory (see <code>fastlane/testflight.md</code>) or merge upstream manually, then run this workflow again." >> $GITHUB_STEP_SUMMARY
+          echo "The build continues with the current state of <code>${TARGET_BRANCH}</code>." >> $GITHUB_STEP_SUMMARY
 
       - name: Show value of 'has_new_commits'
         if: steps.workflow-permission.outputs.has_permission == 'true' && vars.SCHEDULED_SYNC != 'false'
