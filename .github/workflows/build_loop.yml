@@ -254,9 +254,19 @@ jobs:
           # -applies any patches located in the LoopWorkspace/patches/ directory (excluding .patch files which are for submodules)
           if $(ls ./patches/* &> /dev/null); then
             for file in ./patches/*; do
-              if [[ "$file" != *.patch ]]; then
+              # Skip submodule patch folders such as patches/OmnipodKit/
+              if [[ -f "$file" && "$file" != *.patch ]]; then
                 git apply "$file" --allow-empty -v --whitespace=fix
               fi
+            done
+          fi
+
+          # Submodule OmnipodKit patches:
+          # Apply patches from patches/OmnipodKit/ to the OmnipodKit submodule
+          if $(ls ./patches/OmnipodKit/*.patch &> /dev/null); then
+            for patch in ./patches/OmnipodKit/*.patch; do
+              echo "Applying $patch to OmnipodKit submodule..."
+              git apply "$patch" --directory=OmnipodKit -v --whitespace=fix
             done
           fi
 

@@ -1,0 +1,947 @@
+diff --git a/OmnipodKit/PumpManagerUI/ViewControllers/OmniUICoordinator.swift b/OmnipodKit/PumpManagerUI/ViewControllers/OmniUICoordinator.swift
+index 273b4a5..46082d2 100644
+--- a/OmnipodKit/PumpManagerUI/ViewControllers/OmniUICoordinator.swift
++++ b/OmnipodKit/PumpManagerUI/ViewControllers/OmniUICoordinator.swift
+@@ -31,6 +31,7 @@ enum OmniUIScreen {
+     case insertCannula
+     case confirmAttachment
+     case checkInsertedCannula
++    case podSite // log where the new pod was placed
+     case setupComplete
+     case pendingCommandRecovery
+     case uncertaintyRecovered
+@@ -65,6 +66,8 @@ enum OmniUIScreen {
+         case .insertCannula:
+             return .checkInsertedCannula
+         case .checkInsertedCannula:
++            return .podSite
++        case .podSite:
+             return .setupComplete
+         case .setupComplete:
+             return nil
+@@ -343,6 +346,23 @@ class OmniUICoordinator: UINavigationController, PumpManagerOnboarding, Completi
+             hostedView.navigationItem.hidesBackButton = true
+             return hostedView
+ 
++        case .podSite:
++            let view = PodSiteSelectionView(
++                podAddress: pumpManager.state.podState?.address,
++                insertedAt: Date(),
++                onFinish: { [weak self] in
++                    self?.stepFinished()
++                },
++                didRequestDeactivation: { [weak self] in
++                    self?.navigateTo(.deactivate)
++                }
++            )
++
++            let hostedView = hostingController(rootView: view)
++            hostedView.navigationItem.title = LocalizedString("Pod Site", comment: "Title for pod site screen")
++            hostedView.navigationItem.hidesBackButton = true
++            return hostedView
++
+         case .setupComplete:
+             guard let podExpiresAt = pumpManager.expiresAt,
+                   let allowedExpirationReminderDates = pumpManager.allowedExpirationReminderDates
+diff --git a/OmnipodKit/PumpManagerUI/ViewModels/OmniSettingsViewModel.swift b/OmnipodKit/PumpManagerUI/ViewModels/OmniSettingsViewModel.swift
+index 2d9f5eb..d348b14 100644
+--- a/OmnipodKit/PumpManagerUI/ViewModels/OmniSettingsViewModel.swift
++++ b/OmnipodKit/PumpManagerUI/ViewModels/OmniSettingsViewModel.swift
+@@ -266,6 +266,11 @@ class OmniSettingsViewModel: ObservableObject {
+ 
+     private let pumpManager: OmniPumpManager
+ 
++    /// Address of the active pod, used to key its logged pod site.
++    var podAddress: UInt32? {
++        pumpManager.state.podState?.address
++    }
++
+     init(pumpManager: OmniPumpManager) {
+         self.pumpManager = pumpManager
+ 
+diff --git a/OmnipodKit/PumpManagerUI/Views/OmniSettingsView.swift b/OmnipodKit/PumpManagerUI/Views/OmniSettingsView.swift
+index d7617d0..981b26f 100644
+--- a/OmnipodKit/PumpManagerUI/Views/OmniSettingsView.swift
++++ b/OmnipodKit/PumpManagerUI/Views/OmniSettingsView.swift
+@@ -368,6 +368,10 @@ struct OmniSettingsView: View  {
+                 }
+             }
+ 
++            Section() {
++                PodSiteSettingsRow(podAddress: self.viewModel.podAddress, podActivatedAt: self.viewModel.activatedAt)
++            }
++
+             let lifeState = self.viewModel.lifeState
+             Section(header: SectionHeader(label: LocalizedString("Actions", comment: "Section header for Actions section"))) {
+                 // If need to pair a pod, display this as the only action
+diff --git a/OmnipodKit/PumpManagerUI/Views/PodSiteSelectionView.swift b/OmnipodKit/PumpManagerUI/Views/PodSiteSelectionView.swift
+new file mode 100644
+index 0000000..0dedd04
+--- /dev/null
++++ b/OmnipodKit/PumpManagerUI/Views/PodSiteSelectionView.swift
+@@ -0,0 +1,865 @@
++//
++//  PodSiteSelectionView.swift
++//  OmnipodKit
++//
++//  Pod site rotation: after a new pod's cannula is inserted, the user logs
++//  where on the body the pod was placed and which way it faces, so sites can
++//  be rotated and skin given time to heal.
++//
++
++import SwiftUI
++import LoopKitUI
++
++// MARK: - Model
++
++enum PodSiteBodyView: String, Codable {
++    case front
++    case back
++}
++
++enum PodSiteOrientation: String, Codable {
++    case up
++    case down
++    case left
++    case right
++
++    var localizedLabel: String {
++        switch self {
++        case .up: return LocalizedString("Facing up", comment: "Pod site orientation: pod tip faces the head")
++        case .down: return LocalizedString("Facing down", comment: "Pod site orientation: pod tip faces the feet")
++        case .left: return LocalizedString("Facing left", comment: "Pod site orientation: pod tip faces the wearer's left")
++        case .right: return LocalizedString("Facing right", comment: "Pod site orientation: pod tip faces the wearer's right")
++        }
++    }
++
++    var localizedHint: String {
++        switch self {
++        case .up: return LocalizedString("Tip toward head", comment: "Pod site orientation hint for facing up")
++        case .down: return LocalizedString("Tip toward feet", comment: "Pod site orientation hint for facing down")
++        case .left: return LocalizedString("Tip toward your left", comment: "Pod site orientation hint for facing left")
++        case .right: return LocalizedString("Tip toward your right", comment: "Pod site orientation hint for facing right")
++        }
++    }
++
++    /// Rotation of an up-pointing arrow so it points this way on screen.
++    /// Front view is mirrored (the wearer's left is on screen right), back view is not.
++    func screenRotation(in bodyView: PodSiteBodyView) -> Double {
++        switch self {
++        case .up: return 0
++        case .down: return 180
++        case .left: return bodyView == .front ? 90 : -90
++        case .right: return bodyView == .front ? -90 : 90
++        }
++    }
++}
++
++enum PodSite: String, Codable, CaseIterable, Identifiable {
++    case rightOuterThigh
++    case leftOuterThigh
++    case leftUpperButtock
++    case rightUpperButtock
++
++    var id: String { rawValue }
++
++    var bodyView: PodSiteBodyView {
++        switch self {
++        case .rightOuterThigh, .leftOuterThigh: return .front
++        case .leftUpperButtock, .rightUpperButtock: return .back
++        }
++    }
++
++    var localizedName: String {
++        switch self {
++        case .rightOuterThigh: return LocalizedString("Right outer thigh", comment: "Pod site name")
++        case .leftOuterThigh: return LocalizedString("Left outer thigh", comment: "Pod site name")
++        case .leftUpperButtock: return LocalizedString("Left upper buttock", comment: "Pod site name")
++        case .rightUpperButtock: return LocalizedString("Right upper buttock", comment: "Pod site name")
++        }
++    }
++
++    /// The two directions the pod can face at this site: front sites face up or down,
++    /// back sites face left or right.
++    var orientations: [PodSiteOrientation] {
++        bodyView == .front ? [.up, .down] : [.left, .right]
++    }
++
++    /// Marker position in diagram coordinates (see `PodSiteBodyDiagram`).
++    /// The front view is drawn mirrored, so the wearer's right thigh is on screen left.
++    var diagramPoint: CGPoint {
++        switch self {
++        case .rightOuterThigh: return CGPoint(x: 70, y: 236)
++        case .leftOuterThigh: return CGPoint(x: 130, y: 236)
++        case .leftUpperButtock: return CGPoint(x: 85, y: 205)
++        case .rightUpperButtock: return CGPoint(x: 115, y: 205)
++        }
++    }
++}
++
++struct PodSiteEntry: Codable, Equatable {
++    var site: PodSite
++    var orientation: PodSiteOrientation
++    var date: Date
++    var podAddress: UInt32?
++}
++
++/// On-device history of logged pod sites, newest last.
++final class PodSiteLog: ObservableObject {
++    static let shared = PodSiteLog()
++
++    private let defaults: UserDefaults
++    private let storageKey = "com.loopkit.OmnipodKit.PodSiteLog.entries"
++    private let maxEntries = 500
++
++    init(defaults: UserDefaults = .standard) {
++        self.defaults = defaults
++    }
++
++    var entries: [PodSiteEntry] {
++        guard let data = defaults.data(forKey: storageKey),
++              let decoded = try? JSONDecoder().decode([PodSiteEntry].self, from: data)
++        else {
++            return []
++        }
++        return decoded
++    }
++
++    var latest: PodSiteEntry? {
++        entries.last
++    }
++
++    func record(_ entry: PodSiteEntry) {
++        var all = entries
++        // Logging the same pod again replaces its earlier entry.
++        if let address = entry.podAddress {
++            all.removeAll { $0.podAddress == address }
++        }
++        all.append(entry)
++        if all.count > maxEntries {
++            all.removeFirst(all.count - maxEntries)
++        }
++        if let data = try? JSONEncoder().encode(all) {
++            objectWillChange.send()
++            defaults.set(data, forKey: storageKey)
++        }
++    }
++
++    /// The logged site of the pod with this address, if any.
++    func entry(forPodAddress address: UInt32?) -> PodSiteEntry? {
++        guard let address = address else { return nil }
++        return entries.last(where: { $0.podAddress == address })
++    }
++
++    func lastUsed(_ site: PodSite) -> Date? {
++        entries.last(where: { $0.site == site })?.date
++    }
++}
++
++// MARK: - Palette
++
++private enum PodSitePalette {
++    static func color(_ hex: UInt32) -> Color {
++        Color(
++            red: Double((hex >> 16) & 0xFF) / 255,
++            green: Double((hex >> 8) & 0xFF) / 255,
++            blue: Double(hex & 0xFF) / 255
++        )
++    }
++
++    static let skin = color(0x8D5B3E)
++    static let skinLight = color(0xA06C4C)
++    static let skinShadow = color(0x6B402A)
++    static let skinLine = color(0x4E2C1C)
++
++    static let previousPod = color(0x3A3A3F)
++    static let recent = color(0xF4B04A)
++    static let rested = color(0x2E9D6F)
++    static let inactiveEnd = color(0xC7C7CC)
++}
++
++private enum PodSiteStatus {
++    case previousPod
++    case recent
++    case rested
++
++    var color: Color {
++        switch self {
++        case .previousPod: return PodSitePalette.previousPod
++        case .recent: return PodSitePalette.recent
++        case .rested: return PodSitePalette.rested
++        }
++    }
++
++    var localizedDescription: String {
++        switch self {
++        case .previousPod: return LocalizedString("previous pod", comment: "Accessibility status of a pod site used by the previous pod")
++        case .recent: return LocalizedString("used recently", comment: "Accessibility status of a pod site used in the last 10 days")
++        case .rested: return LocalizedString("rested", comment: "Accessibility status of a pod site not used in the last 10 days")
++        }
++    }
++}
++
++// MARK: - Screen
++
++struct PodSiteSelectionView: View {
++
++    @Environment(\.presentationMode) private var presentationMode
++
++    private let podAddress: UInt32?
++    /// True during pod setup; false when opened from Pod Settings to check or change the site.
++    private let isSetupFlow: Bool
++    private let onFinish: (() -> Void)?
++    private let didRequestDeactivation: () -> Void
++    private let log: PodSiteLog
++    private let previousEntry: PodSiteEntry?
++    private let insertedAt: Date
++
++    @State private var bodyView: PodSiteBodyView = .front
++    @State private var selectedSite: PodSite?
++    @State private var orientation: PodSiteOrientation = .up
++    @State private var cancelModalIsPresented = false
++
++    private static let recentInterval: TimeInterval = 10 * 24 * 60 * 60
++
++    init(
++        podAddress: UInt32?,
++        isSetupFlow: Bool = true,
++        insertedAt: Date? = nil,
++        log: PodSiteLog = .shared,
++        onFinish: (() -> Void)? = nil,
++        didRequestDeactivation: @escaping () -> Void = {}
++    ) {
++        self.podAddress = podAddress
++        self.isSetupFlow = isSetupFlow
++        self.log = log
++        self.onFinish = onFinish
++        self.didRequestDeactivation = didRequestDeactivation
++        // The newest entry belongs to the previous pod, unless it is this pod's own entry.
++        self.previousEntry = log.entries.last(where: { podAddress == nil || $0.podAddress != podAddress })
++
++        // Reopening for a pod that was already logged shows its saved site.
++        let existing = log.entry(forPodAddress: podAddress)
++        self.insertedAt = existing?.date ?? insertedAt ?? Date()
++        if let existing = existing {
++            _selectedSite = State(initialValue: existing.site)
++            _orientation = State(initialValue: existing.orientation)
++            _bodyView = State(initialValue: existing.site.bodyView)
++        }
++    }
++
++    /// Saving needs a pod to attach the site to; without one the screen is view-only.
++    private var canSave: Bool {
++        isSetupFlow || podAddress != nil
++    }
++
++    private func finish() {
++        if let onFinish = onFinish {
++            onFinish()
++        } else {
++            presentationMode.wrappedValue.dismiss()
++        }
++    }
++
++    var body: some View {
++        VStack(spacing: 0) {
++            ScrollView {
++                VStack(alignment: .leading, spacing: 18) {
++                    header
++                    bodyViewPicker
++                    diagramCard
++                    suggestionButton
++                    detailsCard
++                    orientationSection
++                }
++                .padding(.horizontal, 20)
++                .padding(.vertical, 16)
++            }
++            actionButtons
++        }
++        .background(Color(UIColor.systemGroupedBackground).edgesIgnoringSafeArea(.all))
++        .alert(isPresented: $cancelModalIsPresented) { cancelPairingModal }
++        .navigationTitle(LocalizedString("Pod Site", comment: "navigation title for pod site selection"))
++        .navigationBarTitleDisplayMode(.inline)
++        .navigationBarItems(trailing: isSetupFlow ? AnyView(cancelButton) : AnyView(EmptyView()))
++        .navigationBarBackButtonHidden(isSetupFlow)
++    }
++
++    // MARK: Sections
++
++    private var header: some View {
++        VStack(alignment: .leading, spacing: 6) {
++            Text(LocalizedString("Where did you place this pod?", comment: "Pod site selection title"))
++                .font(.title2)
++                .bold()
++                .fixedSize(horizontal: false, vertical: true)
++            Text(canSave
++                 ? LocalizedString("Logging each site helps you rotate and give skin time to heal.", comment: "Pod site selection description")
++                 : LocalizedString("See which site has rested longest before you place your next pod.", comment: "Pod site description when no pod is active"))
++                .font(.subheadline)
++                .foregroundColor(.secondary)
++                .fixedSize(horizontal: false, vertical: true)
++        }
++    }
++
++    private var bodyViewPicker: some View {
++        Picker(LocalizedString("Body view", comment: "Accessibility label for the front/back body view picker"), selection: $bodyView) {
++            Text(LocalizedString("Front", comment: "Front body view")).tag(PodSiteBodyView.front)
++            Text(LocalizedString("Back", comment: "Back body view")).tag(PodSiteBodyView.back)
++        }
++        .pickerStyle(.segmented)
++    }
++
++    private var diagramCard: some View {
++        VStack(spacing: 12) {
++            HStack {
++                Text(bodyView == .front
++                     ? LocalizedString("Your right", comment: "Edge label: wearer's right side")
++                     : LocalizedString("Your left", comment: "Edge label: wearer's left side"))
++                Spacer()
++                Text(bodyView == .front
++                     ? LocalizedString("Your left", comment: "Edge label: wearer's left side")
++                     : LocalizedString("Your right", comment: "Edge label: wearer's right side"))
++            }
++            .font(.caption.weight(.semibold))
++            .textCase(.uppercase)
++            .foregroundColor(.secondary)
++            .padding(.horizontal, 8)
++
++            ZStack(alignment: .topLeading) {
++                PodSiteBodyDiagram(bodyView: bodyView)
++                ForEach(PodSite.allCases.filter { $0.bodyView == bodyView }) { site in
++                    siteMarker(site)
++                }
++            }
++            .frame(width: PodSiteBodyDiagram.size.width, height: PodSiteBodyDiagram.size.height)
++            .clipped()
++
++            HStack(spacing: 14) {
++                legendItem(PodSitePalette.previousPod, LocalizedString("Previous pod", comment: "Pod site legend: previous pod"))
++                legendItem(PodSitePalette.recent, LocalizedString("Used < 10 days", comment: "Pod site legend: used in last 10 days"))
++                legendItem(PodSitePalette.rested, LocalizedString("Rested", comment: "Pod site legend: rested site"))
++            }
++            .font(.caption)
++            .foregroundColor(.secondary)
++        }
++        .padding(.top, 16)
++        .padding(.horizontal, 12)
++        .padding(.bottom, 12)
++        .frame(maxWidth: .infinity)
++        .background(Color(UIColor.secondarySystemGroupedBackground))
++        .cornerRadius(14)
++    }
++
++    @ViewBuilder
++    private var suggestionButton: some View {
++        if let suggested = suggestedSite, suggested != selectedSite {
++            Button(action: { select(suggested, orientation: suggested.orientations[0]) }) {
++                HStack(spacing: 10) {
++                    Image(systemName: "star")
++                        .font(.body.weight(.semibold))
++                    VStack(alignment: .leading, spacing: 2) {
++                        Text(String(format: LocalizedString("Suggested: %1$@", comment: "Suggested pod site (1: site name)"), suggested.localizedName))
++                            .bold()
++                        Text(suggestionDetail(for: suggested))
++                    }
++                    .font(.subheadline)
++                    Spacer()
++                }
++                .padding(.horizontal, 14)
++                .padding(.vertical, 12)
++                .foregroundColor(PodSitePalette.color(0x145C3F))
++                .background(PodSitePalette.color(0xE6F4EE))
++                .cornerRadius(12)
++            }
++            .buttonStyle(.plain)
++        }
++    }
++
++    private var detailsCard: some View {
++        VStack(spacing: 0) {
++            detailRow(LocalizedString("Site", comment: "Pod site detail row label"),
++                      value: selectedSite?.localizedName ?? LocalizedString("Tap the body to choose", comment: "Pod site placeholder when no site is selected"),
++                      valueColor: selectedSite == nil ? .secondary : .primary)
++            Divider().padding(.leading, 16)
++            detailRow(LocalizedString("Last used here", comment: "Pod site detail row label"),
++                      value: selectedSite.map { lastUsedText(for: $0) } ?? "—",
++                      valueColor: .secondary)
++            Divider().padding(.leading, 16)
++            detailRow(LocalizedString("Inserted", comment: "Pod site detail row label for insertion date"),
++                      value: Self.insertedFormatter.string(from: insertedAt),
++                      valueColor: .secondary)
++        }
++        .background(Color(UIColor.secondarySystemGroupedBackground))
++        .cornerRadius(14)
++    }
++
++    private var orientationSection: some View {
++        let choices: [PodSiteOrientation] = (selectedSite?.orientations) ?? (bodyView == .front ? [.up, .down] : [.left, .right])
++        let viewForIcons = selectedSite?.bodyView ?? bodyView
++        return VStack(alignment: .leading, spacing: 10) {
++            Text(LocalizedString("Orientation", comment: "Pod site orientation section header"))
++                .font(.footnote.weight(.semibold))
++                .textCase(.uppercase)
++                .foregroundColor(.secondary)
++                .padding(.leading, 4)
++            HStack(spacing: 10) {
++                ForEach(choices, id: \.self) { choice in
++                    let isOn = choice == activeOrientation(in: choices)
++                    Button(action: { orientation = choice }) {
++                        VStack(spacing: 4) {
++                            PodShape()
++                                .fill(Color.white)
++                                .overlay(PodShape().stroke(isOn ? Color.accentColor : Color.secondary, style: StrokeStyle(lineWidth: 2.2, lineJoin: .round)))
++                                .frame(width: 34, height: 36)
++                                .rotationEffect(.degrees(choice.screenRotation(in: viewForIcons)))
++                                .frame(width: 48, height: 48)
++                            Text(choice.localizedLabel)
++                                .font(.subheadline.weight(.semibold))
++                                .foregroundColor(.primary)
++                            Text(choice.localizedHint)
++                                .font(.caption2)
++                                .foregroundColor(.secondary)
++                        }
++                        .padding(.top, 10)
++                        .padding(.bottom, 12)
++                        .frame(maxWidth: .infinity)
++                        .background(Color(UIColor.secondarySystemGroupedBackground))
++                        .cornerRadius(12)
++                        .overlay(RoundedRectangle(cornerRadius: 12).stroke(isOn ? Color.accentColor : Color.clear, lineWidth: 2))
++                    }
++                    .buttonStyle(.plain)
++                    .accessibilityAddTraits(isOn ? .isSelected : [])
++                }
++            }
++        }
++    }
++
++    private var actionButtons: some View {
++        VStack(spacing: 10) {
++            if canSave {
++                Button(action: save) {
++                    Text(LocalizedString("Save Site", comment: "Button to save the selected pod site"))
++                        .actionButtonStyle(.primary)
++                }
++                .disabled(selectedSite == nil)
++            }
++            Button(action: finish) {
++                Text(isSetupFlow
++                     ? LocalizedString("Skip", comment: "Button to skip logging the pod site")
++                     : LocalizedString("Done", comment: "Button to close the pod site screen"))
++                    .frame(maxWidth: .infinity)
++                    .padding(.vertical, 8)
++            }
++        }
++        .padding()
++        .background(Color(UIColor.systemGroupedBackground))
++    }
++
++    // MARK: Pieces
++
++    private func siteMarker(_ site: PodSite) -> some View {
++        let center = PodSiteBodyDiagram.screenPoint(for: site.diagramPoint)
++        let isSelected = site == selectedSite
++        let siteStatus = status(for: site)
++        let ends = site.orientations          // [first end, second end]
++        let current: PodSiteOrientation? = isSelected ? orientation : nil
++        let baseRotation = ends[0].screenRotation(in: site.bodyView)
++        let firstOffset = Self.offset(forRotation: baseRotation, distance: 22)
++
++        return ZStack {
++            PodSiteArrow(
++                firstColor: isSelected ? (current == ends[0] ? Color.accentColor : PodSitePalette.inactiveEnd)  : siteStatus.color,
++                secondColor: isSelected ? (current == ends[1] ? Color.accentColor : PodSitePalette.inactiveEnd) : siteStatus.color,
++                firstEmphasized: current == ends[0],
++                secondEmphasized: current == ends[1]
++            )
++            .frame(width: 56, height: 56)
++            .rotationEffect(.degrees(baseRotation))
++            .allowsHitTesting(false)
++            .accessibilityHidden(true)
++
++            arrowEndButton(site: site, end: ends[0], status: siteStatus, isOn: current == ends[0])
++                .offset(x: firstOffset.width, y: firstOffset.height)
++            arrowEndButton(site: site, end: ends[1], status: siteStatus, isOn: current == ends[1])
++                .offset(x: -firstOffset.width, y: -firstOffset.height)
++        }
++        .frame(width: 100, height: 100)
++        .position(x: center.x, y: center.y)
++    }
++
++    private func arrowEndButton(site: PodSite, end: PodSiteOrientation, status: PodSiteStatus, isOn: Bool) -> some View {
++        Button(action: { select(site, orientation: end) }) {
++            Color.clear
++                .frame(width: 44, height: 44)
++                .contentShape(Rectangle())
++        }
++        .buttonStyle(.plain)
++        .accessibilityLabel(Text("\(site.localizedName), \(end.localizedLabel), \(status.localizedDescription), \(LocalizedString("last used", comment: "Accessibility prefix for when a pod site was last used")) \(lastUsedText(for: site))"))
++        .accessibilityAddTraits(isOn ? .isSelected : [])
++    }
++
++    private func legendItem(_ color: Color, _ label: String) -> some View {
++        HStack(spacing: 6) {
++            Circle().fill(color).frame(width: 12, height: 12)
++            Text(label)
++        }
++    }
++
++    private func detailRow(_ label: String, value: String, valueColor: Color) -> some View {
++        HStack {
++            Text(label)
++            Spacer()
++            Text(value)
++                .foregroundColor(valueColor)
++                .multilineTextAlignment(.trailing)
++        }
++        .padding(.horizontal, 16)
++        .padding(.vertical, 13)
++    }
++
++    // MARK: Logic
++
++    private func select(_ site: PodSite, orientation: PodSiteOrientation) {
++        selectedSite = site
++        bodyView = site.bodyView
++        self.orientation = orientation
++    }
++
++    private func activeOrientation(in choices: [PodSiteOrientation]) -> PodSiteOrientation {
++        choices.contains(orientation) ? orientation : choices[0]
++    }
++
++    private func save() {
++        guard let site = selectedSite else { return }
++        let entry = PodSiteEntry(
++            site: site,
++            orientation: activeOrientation(in: site.orientations),
++            date: insertedAt,
++            podAddress: podAddress
++        )
++        log.record(entry)
++        finish()
++    }
++
++    private func status(for site: PodSite) -> PodSiteStatus {
++        if previousEntry?.site == site {
++            return .previousPod
++        }
++        if let lastUsed = log.lastUsed(site), insertedAt.timeIntervalSince(lastUsed) < Self.recentInterval {
++            return .recent
++        }
++        return .rested
++    }
++
++    /// The site rested longest (never-used sites first).
++    private var suggestedSite: PodSite? {
++        PodSite.allCases.min { a, b in
++            (log.lastUsed(a) ?? .distantPast) < (log.lastUsed(b) ?? .distantPast)
++        }
++    }
++
++    private func suggestionDetail(for site: PodSite) -> String {
++        guard let lastUsed = log.lastUsed(site) else {
++            return LocalizedString("Never used — tap to select", comment: "Suggested pod site detail when never used")
++        }
++        let days = Self.daysBetween(lastUsed, insertedAt)
++        return String(format: LocalizedString("Rested %1$ld days — tap to select", comment: "Suggested pod site detail (1: days since last used)"), days)
++    }
++
++    private func lastUsedText(for site: PodSite) -> String {
++        guard let lastUsed = log.lastUsed(site) else {
++            return LocalizedString("Never", comment: "Pod site never used")
++        }
++        let days = Self.daysBetween(lastUsed, insertedAt)
++        let dateText = Self.shortDateFormatter.string(from: lastUsed)
++        if days == 1 {
++            return String(format: LocalizedString("%1$@ · 1 day ago", comment: "Pod site last used (1: date)"), dateText)
++        }
++        return String(format: LocalizedString("%1$@ · %2$ld days ago", comment: "Pod site last used (1: date, 2: days ago)"), dateText, days)
++    }
++
++    private static func daysBetween(_ start: Date, _ end: Date) -> Int {
++        let calendar = Calendar.current
++        let days = calendar.dateComponents([.day], from: calendar.startOfDay(for: start), to: calendar.startOfDay(for: end)).day ?? 0
++        return max(days, 0)
++    }
++
++    /// Screen offset of the arrow end that an up-pointing arrow reaches after `rotation` degrees (clockwise).
++    private static func offset(forRotation rotation: Double, distance: CGFloat) -> CGSize {
++        let radians = rotation * Double.pi / 180
++        return CGSize(width: CGFloat(sin(radians)) * distance, height: -CGFloat(cos(radians)) * distance)
++    }
++
++    private static let shortDateFormatter: DateFormatter = {
++        let formatter = DateFormatter()
++        formatter.setLocalizedDateFormatFromTemplate("MMMd")
++        return formatter
++    }()
++
++    private static let insertedFormatter: DateFormatter = {
++        let formatter = DateFormatter()
++        formatter.setLocalizedDateFormatFromTemplate("MMMd jmm")
++        return formatter
++    }()
++
++    // MARK: Cancel
++
++    private var cancelButton: some View {
++        Button(LocalizedString("Cancel", comment: "Cancel button text in navigation bar on pod site screen")) {
++            cancelModalIsPresented = true
++        }
++        .accessibility(identifier: "button_cancel")
++    }
++
++    private var cancelPairingModal: Alert {
++        Alert(
++            title: FrameworkLocalText("Are you sure you want to cancel Pod setup?", comment: "Alert title for cancel pairing modal"),
++            message: FrameworkLocalText("If you cancel Pod setup, the current Pod will be deactivated and will be unusable.", comment: "Alert message body for confirm pod attachment"),
++            primaryButton: .destructive(FrameworkLocalText("Yes, Deactivate Pod", comment: "Button title for confirm deactivation option"), action: { didRequestDeactivation() }),
++            secondaryButton: .default(FrameworkLocalText("No, Continue With Pod", comment: "Continue pairing button title of in pairing cancel modal"))
++        )
++    }
++}
++
++// MARK: - Drawing
++
++/// Hips and upper thighs, drawn in a fixed "diagram" coordinate space
++/// (x 56...143.5, y 180...270) and scaled up to fill the frame.
++struct PodSiteBodyDiagram: View {
++    let bodyView: PodSiteBodyView
++
++    static let origin = CGPoint(x: 56, y: 180)
++    static let scale: CGFloat = 3.2
++    static let size = CGSize(width: 280, height: 288)
++
++    static func screenPoint(for point: CGPoint) -> CGPoint {
++        CGPoint(x: (point.x - origin.x) * scale, y: (point.y - origin.y) * scale)
++    }
++
++    static var transform: CGAffineTransform {
++        CGAffineTransform(scaleX: scale, y: scale).translatedBy(x: -origin.x, y: -origin.y)
++    }
++
++    var body: some View {
++        ZStack {
++            DiagramShape(kind: .silhouette)
++                .fill(LinearGradient(
++                    gradient: Gradient(stops: [
++                        .init(color: PodSitePalette.skinShadow, location: 0),
++                        .init(color: PodSitePalette.skin, location: 0.18),
++                        .init(color: PodSitePalette.skinLight, location: 0.5),
++                        .init(color: PodSitePalette.skin, location: 0.82),
++                        .init(color: PodSitePalette.skinShadow, location: 1)
++                    ]),
++                    startPoint: .leading,
++                    endPoint: .trailing
++                ))
++            DiagramShape(kind: .silhouette)
++                .stroke(PodSitePalette.skinLine, style: StrokeStyle(lineWidth: 0.45 * Self.scale, lineJoin: .round))
++
++            if bodyView == .back {
++                glute(centerX: 81)
++                glute(centerX: 119)
++                DiagramShape(kind: .backContours)
++                    .stroke(PodSitePalette.skinLine.opacity(0.85), style: StrokeStyle(lineWidth: 0.5 * Self.scale, lineCap: .round))
++                DiagramShape(kind: .backDimples)
++                    .fill(PodSitePalette.skinShadow.opacity(0.6))
++            } else {
++                DiagramShape(kind: .frontContours)
++                    .stroke(PodSitePalette.skinLine.opacity(0.7), style: StrokeStyle(lineWidth: 0.45 * Self.scale, lineCap: .round))
++            }
++        }
++        .frame(width: Self.size.width, height: Self.size.height)
++        .accessibilityHidden(true)
++    }
++
++    private func glute(centerX: CGFloat) -> some View {
++        let center = Self.screenPoint(for: CGPoint(x: centerX, y: 214))
++        return Ellipse()
++            .fill(RadialGradient(
++                gradient: Gradient(colors: [PodSitePalette.skinLight.opacity(0.9), PodSitePalette.skinLight.opacity(0)]),
++                center: .center,
++                startRadius: 0,
++                endRadius: 20 * Self.scale
++            ))
++            .frame(width: 34 * Self.scale, height: 40 * Self.scale)
++            .position(x: center.x, y: center.y)
++    }
++
++    fileprivate static func silhouette(_ p: inout Path) {
++        p.move(to: CGPoint(x: 67, y: 178))
++        p.addCurve(to: CGPoint(x: 58.3, y: 212), control1: CGPoint(x: 65.5, y: 190), control2: CGPoint(x: 59, y: 198))
++        p.addCurve(to: CGPoint(x: 62.5, y: 272), control1: CGPoint(x: 57.6, y: 228), control2: CGPoint(x: 60.5, y: 248))
++        p.addLine(to: CGPoint(x: 97.5, y: 272))
++        p.addCurve(to: CGPoint(x: 100, y: 233), control1: CGPoint(x: 98, y: 256), control2: CGPoint(x: 98.8, y: 242))
++        p.addCurve(to: CGPoint(x: 102.5, y: 272), control1: CGPoint(x: 101.2, y: 242), control2: CGPoint(x: 102, y: 256))
++        p.addLine(to: CGPoint(x: 137.5, y: 272))
++        p.addCurve(to: CGPoint(x: 141.7, y: 212), control1: CGPoint(x: 139.5, y: 248), control2: CGPoint(x: 142.4, y: 228))
++        p.addCurve(to: CGPoint(x: 133, y: 178), control1: CGPoint(x: 141, y: 198), control2: CGPoint(x: 134.5, y: 190))
++        p.closeSubpath()
++    }
++
++    fileprivate static func frontContours(_ p: inout Path) {
++        // Hip creases toward the groin
++        p.move(to: CGPoint(x: 70.5, y: 196))
++        p.addCurve(to: CGPoint(x: 98.6, y: 230), control1: CGPoint(x: 79, y: 206), control2: CGPoint(x: 89, y: 217))
++        p.move(to: CGPoint(x: 129.5, y: 196))
++        p.addCurve(to: CGPoint(x: 101.4, y: 230), control1: CGPoint(x: 121, y: 206), control2: CGPoint(x: 111, y: 217))
++        // Hip bones
++        p.move(to: CGPoint(x: 66, y: 186))
++        p.addCurve(to: CGPoint(x: 70.5, y: 196), control1: CGPoint(x: 68, y: 190), control2: CGPoint(x: 69.5, y: 193))
++        p.move(to: CGPoint(x: 134, y: 186))
++        p.addCurve(to: CGPoint(x: 129.5, y: 196), control1: CGPoint(x: 132, y: 190), control2: CGPoint(x: 130.5, y: 193))
++        // Thigh muscle lines
++        p.move(to: CGPoint(x: 77, y: 243))
++        p.addCurve(to: CGPoint(x: 80, y: 272), control1: CGPoint(x: 79.5, y: 252), control2: CGPoint(x: 80.5, y: 261))
++        p.move(to: CGPoint(x: 123, y: 243))
++        p.addCurve(to: CGPoint(x: 120, y: 272), control1: CGPoint(x: 120.5, y: 252), control2: CGPoint(x: 119.5, y: 261))
++    }
++
++    fileprivate static func backContours(_ p: inout Path) {
++        // Spine and cleft
++        p.move(to: CGPoint(x: 100, y: 178))
++        p.addLine(to: CGPoint(x: 100, y: 194))
++        p.move(to: CGPoint(x: 100, y: 199))
++        p.addCurve(to: CGPoint(x: 100, y: 233), control1: CGPoint(x: 100.2, y: 211), control2: CGPoint(x: 100, y: 222))
++        // Gluteal folds
++        p.move(to: CGPoint(x: 63, y: 236))
++        p.addCurve(to: CGPoint(x: 99, y: 238), control1: CGPoint(x: 71, y: 245.5), control2: CGPoint(x: 87, y: 247.5))
++        p.move(to: CGPoint(x: 137, y: 236))
++        p.addCurve(to: CGPoint(x: 101, y: 238), control1: CGPoint(x: 129, y: 245.5), control2: CGPoint(x: 113, y: 247.5))
++        // Hip outline hints
++        p.move(to: CGPoint(x: 60, y: 205))
++        p.addCurve(to: CGPoint(x: 71, y: 190), control1: CGPoint(x: 63, y: 198), control2: CGPoint(x: 67, y: 193))
++        p.move(to: CGPoint(x: 140, y: 205))
++        p.addCurve(to: CGPoint(x: 129, y: 190), control1: CGPoint(x: 137, y: 198), control2: CGPoint(x: 133, y: 193))
++    }
++
++    fileprivate static func backDimples(_ p: inout Path) {
++        p.addEllipse(in: CGRect(x: 91.4, y: 188.9, width: 3.2, height: 2.2))
++        p.addEllipse(in: CGRect(x: 105.4, y: 188.9, width: 3.2, height: 2.2))
++    }
++
++    /// A shape drawn in diagram coordinates and scaled into the diagram frame.
++    private struct DiagramShape: Shape {
++        enum Kind {
++            case silhouette
++            case frontContours
++            case backContours
++            case backDimples
++        }
++
++        let kind: Kind
++
++        func path(in rect: CGRect) -> Path {
++            var path = Path()
++            switch kind {
++            case .silhouette: PodSiteBodyDiagram.silhouette(&path)
++            case .frontContours: PodSiteBodyDiagram.frontContours(&path)
++            case .backContours: PodSiteBodyDiagram.backContours(&path)
++            case .backDimples: PodSiteBodyDiagram.backDimples(&path)
++            }
++            return path.applying(PodSiteBodyDiagram.transform)
++        }
++    }
++}
++
++/// Double-headed arrow drawn pointing up/down in a 24x24 box; each end is colored separately
++/// so the selected end shows which way the pod faces.
++private struct PodSiteArrow: View {
++    let firstColor: Color
++    let secondColor: Color
++    let firstEmphasized: Bool
++    let secondEmphasized: Bool
++
++    var body: some View {
++        ZStack {
++            ArrowHalf(pointingUp: true).stroke(Color.white, style: StrokeStyle(lineWidth: 6 * scale, lineCap: .round, lineJoin: .round))
++            ArrowHalf(pointingUp: false).stroke(Color.white, style: StrokeStyle(lineWidth: 6 * scale, lineCap: .round, lineJoin: .round))
++            ArrowHalf(pointingUp: true).stroke(firstColor, style: StrokeStyle(lineWidth: (firstEmphasized ? 3.2 : 2.4) * scale, lineCap: .round, lineJoin: .round))
++            ArrowHalf(pointingUp: false).stroke(secondColor, style: StrokeStyle(lineWidth: (secondEmphasized ? 3.2 : 2.4) * scale, lineCap: .round, lineJoin: .round))
++        }
++    }
++
++    private var scale: CGFloat { 56.0 / 24.0 }
++
++    private struct ArrowHalf: Shape {
++        let pointingUp: Bool
++
++        func path(in rect: CGRect) -> Path {
++            let s = min(rect.width, rect.height) / 24
++            func pt(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
++                CGPoint(x: rect.minX + x * s, y: rect.minY + y * s)
++            }
++            var p = Path()
++            let tipY: CGFloat = pointingUp ? 2.5 : 21.5
++            let barbY: CGFloat = pointingUp ? 7.5 : 16.5
++            p.move(to: pt(12, 12))
++            p.addLine(to: pt(12, tipY))
++            p.move(to: pt(7, barbY))
++            p.addLine(to: pt(12, tipY))
++            p.addLine(to: pt(17, barbY))
++            return p
++        }
++    }
++}
++
++/// Rounded-triangle pod outline, tip pointing up.
++private struct PodShape: Shape {
++    func path(in rect: CGRect) -> Path {
++        let sx = rect.width / 34
++        let sy = rect.height / 36
++        func pt(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
++            CGPoint(x: rect.minX + (x - 7) * sx, y: rect.minY + (y - 6) * sy)
++        }
++        var p = Path()
++        p.move(to: pt(24, 6))
++        p.addCurve(to: pt(28.6, 9.6), control1: pt(26, 6), control2: pt(27.5, 7.5))
++        p.addLine(to: pt(39.4, 33.4))
++        p.addCurve(to: pt(34, 42), control1: pt(41.4, 37.8), control2: pt(38.8, 42))
++        p.addLine(to: pt(14, 42))
++        p.addCurve(to: pt(8.6, 33.4), control1: pt(9.2, 42), control2: pt(6.6, 37.8))
++        p.addLine(to: pt(19.4, 9.6))
++        p.addCurve(to: pt(24, 6), control1: pt(20.5, 7.5), control2: pt(22, 6))
++        p.closeSubpath()
++        return p
++    }
++}
++
++/// Pod Settings row: shows where the current pod is placed and opens the pod site screen,
++/// which is available at any time to check which site has rested longest.
++struct PodSiteSettingsRow: View {
++    let podAddress: UInt32?
++    let podActivatedAt: Date?
++
++    @ObservedObject private var log = PodSiteLog.shared
++
++    var body: some View {
++        NavigationLink(destination: PodSiteSelectionView(podAddress: podAddress, isSetupFlow: false, insertedAt: podActivatedAt)) {
++            HStack {
++                Text(LocalizedString("Pod Site", comment: "Settings row label for the logged pod site"))
++                Spacer()
++                if let entry = log.entry(forPodAddress: podAddress) {
++                    VStack(alignment: .trailing, spacing: 2) {
++                        Text(entry.site.localizedName)
++                        Text(entry.orientation.localizedLabel)
++                            .font(.footnote)
++                    }
++                    .foregroundColor(.secondary)
++                } else {
++                    Text(podAddress == nil
++                         ? LocalizedString("Best site", comment: "Pod site settings row value when no pod is active")
++                         : LocalizedString("Not logged", comment: "Pod site settings row value when the current pod's site was not logged"))
++                        .foregroundColor(.secondary)
++                }
++            }
++        }
++    }
++}
++
++struct PodSiteSelectionView_Previews: PreviewProvider {
++    static var previews: some View {
++        NavigationView {
++            PodSiteSelectionView(podAddress: nil, onFinish: {}, didRequestDeactivation: {})
++        }
++    }
++}
