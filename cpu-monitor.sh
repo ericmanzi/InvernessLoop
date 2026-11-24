@@ -59,7 +59,8 @@ case "${1:-}" in
     echo "Samples: $samples  ($(head -n1 "$LOG" | cut -f1)  ->  $(tail -n1 "$LOG" | cut -f1))"
     echo
     printf "%-30s %10s %10s %12s\n" "PROCESS" "AVG %CPU" "MAX %CPU" "SEEN IN TOP"
-    awk -F'\t' -v s="$samples" '{sum[$4]+=$3; cnt[$4]++; if($3>max[$4]) max[$4]=$3}
+    # Show only the program name (last path component) so long macOS paths aren't truncated.
+    awk -F'\t' -v s="$samples" '{k=split($4,a,"/"); $4=a[k]; sum[$4]+=$3; cnt[$4]++; if($3>max[$4]) max[$4]=$3}
       END {for (p in sum) printf "%.1f\t%-30s %10.1f %10.1f %11d%%\n", sum[p]/s, substr(p,1,30), sum[p]/s, max[p], cnt[p]*100/s}' "$LOG" \
       | sort -t$'\t' -k1,1 -nr | cut -f2- | head -n "$n"
     ;;
